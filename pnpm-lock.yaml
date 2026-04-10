@@ -202,7 +202,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/adapter-teams
       '@chat-adapter/telegram':
-        specifier: workspace:*
+        specifier: workspace:@shellraining/chat-adapter-telegram@*
         version: link:../../packages/adapter-telegram
       '@chat-adapter/whatsapp':
         specifier: workspace:*
@@ -446,6 +446,9 @@ importers:
       chat:
         specifier: workspace:*
         version: link:../chat
+      telegramify:
+        specifier: ^0.1.1
+        version: 0.1.1
     devDependencies:
       '@types/node':
         specifier: ^25.3.2
@@ -540,7 +543,7 @@ importers:
         specifier: workspace:*
         version: link:../adapter-teams
       '@chat-adapter/telegram':
-        specifier: workspace:*
+        specifier: workspace:@shellraining/chat-adapter-telegram@*
         version: link:../adapter-telegram
       '@chat-adapter/whatsapp':
         specifier: workspace:*
@@ -3195,6 +3198,9 @@ packages:
   chardet@2.1.1:
     resolution: {integrity: sha512-PsezH1rqdV9VvyNhxxOW32/d75r01NY7TQCmOqomRo15ZSOKbpTFVsfjghxo6JloQUCGnH4k1LGu0R4yCLlWQQ==}
 
+  chat@4.26.0:
+    resolution: {integrity: sha512-QToDnIEGpyb8yQA6YLMHOSRK30YVk4RtsyFyuWFYyB2c4jQlyIrSWtwVK7qyvmvqzQp9uDwCdJRAhS8GtCHAGQ==}
+
   chevrotain-allstar@0.3.1:
     resolution: {integrity: sha512-b7g+y9A0v4mxCW1qUhf3BSVPg+/NvGErk/dOkrDaHA0nQIQGAtrOjlX//9OQtRlSCy+x9rfB5N8yC71lH1nvMw==}
     peerDependencies:
@@ -5523,6 +5529,9 @@ packages:
   tapable@2.3.0:
     resolution: {integrity: sha512-g9ljZiwki/LfxmQADO3dEY1CbpmXT5Hm2fJ+QaGKwSXUylMybePR7/67YW7jOrrvjEgL1Fmz5kzyAjWVWLlucg==}
     engines: {node: '>=6'}
+
+  telegramify@0.1.1:
+    resolution: {integrity: sha512-m4rweq+PFcJMbKSecwOig0ZCgozAsqLO3TEv9jgibOrEy2+6MbLd0cWG36T2QsiwBCZR8Uscr5VT4CX6o4K2bQ==}
 
   term-size@2.2.1:
     resolution: {integrity: sha512-wK0Ri4fOGjv/XPy8SBHZChl8CM7uMc5VML7SqiQ0zG7+J5Vr+RMQDoHa2CNT6KHUnTGIXH34UDMkPzAUyapBZg==}
@@ -8468,6 +8477,18 @@ snapshots:
   character-reference-invalid@2.0.1: {}
 
   chardet@2.1.1: {}
+
+  chat@4.26.0:
+    dependencies:
+      '@workflow/serde': 4.1.0-beta.2
+      mdast-util-to-string: 4.0.0
+      remark-gfm: 4.0.1
+      remark-parse: 11.0.0
+      remark-stringify: 11.0.0
+      remend: 1.2.1
+      unified: 11.0.5
+    transitivePeerDependencies:
+      - supports-color
 
   chevrotain-allstar@0.3.1(chevrotain@11.0.3):
     dependencies:
@@ -11452,6 +11473,12 @@ snapshots:
   tailwindcss@4.1.18: {}
 
   tapable@2.3.0: {}
+
+  telegramify@0.1.1:
+    dependencies:
+      chat: 4.26.0
+    transitivePeerDependencies:
+      - supports-color
 
   term-size@2.2.1: {}
 

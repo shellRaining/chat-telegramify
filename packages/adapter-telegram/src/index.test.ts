@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AdapterRateLimitError,
   AuthenticationError,
@@ -944,7 +947,7 @@ describe("TelegramAdapter", () => {
     expect(sendMessageBody.text).toBe("raw id message");
   });
 
-  it("sets parse_mode for markdown messages", async () => {
+  it("does not set parse_mode for markdown messages", async () => {
     mockFetch
       .mockResolvedValueOnce(
         telegramOk({
@@ -971,9 +974,486 @@ describe("TelegramAdapter", () => {
 
     const sendMessageBody = JSON.parse(
       String((mockFetch.mock.calls[1]?.[1] as RequestInit).body)
-    ) as { parse_mode?: string };
+    ) as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      parse_mode?: string;
+      text: string;
+    };
 
-    expect(sendMessageBody.parse_mode).toBe("Markdown");
+    expect(sendMessageBody.text).toBe("bold and italic");
+    expect(sendMessageBody.entities).toEqual([
+      { type: "bold", offset: 0, length: 4 },
+      { type: "italic", offset: 9, length: 6 },
+    ]);
+    expect(sendMessageBody.parse_mode).toBeUndefined();
+  });
+
+  it("sends markdown messages using entities instead of parse_mode", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(
+        telegramOk(
+          sampleMessage({
+            text: "bold and italic",
+            entities: [
+              { type: "bold", offset: 0, length: 4 },
+              { type: "italic", offset: 9, length: 6 },
+            ],
+          })
+        )
+      );
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    await adapter.postMessage("telegram:123", {
+      markdown: "**bold** and *italic*",
+    });
+
+    const sendMessageBody = JSON.parse(
+      String((mockFetch.mock.calls[1]?.[1] as RequestInit).body)
+    ) as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      parse_mode?: string;
+      text: string;
+    };
+
+    expect(sendMessageBody.text).toBe("bold and italic");
+    expect(sendMessageBody.entities).toEqual([
+      { type: "bold", offset: 0, length: 4 },
+      { type: "italic", offset: 9, length: 6 },
+    ]);
+    expect(sendMessageBody.parse_mode).toBeUndefined();
+  });
+
+  it("recomputes entity offsets after emoji placeholder conversion", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage()));
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    await adapter.postMessage("telegram:123", {
+      markdown: "**ok {{emoji:thumbs_up}}** done",
+    });
+
+    const sendMessageBody = JSON.parse(
+      String((mockFetch.mock.calls[1]?.[1] as RequestInit).body)
+    ) as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      text: string;
+    };
+
+    expect(sendMessageBody.text).toBe("ok 👍 done");
+    expect(sendMessageBody.entities).toEqual([
+      { type: "bold", offset: 0, length: 5 },
+    ]);
+  });
+
+  it("sends ast messages using entities instead of parse_mode", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(
+        telegramOk(
+          sampleMessage({
+            text: "bold",
+            entities: [{ type: "bold", offset: 0, length: 4 }],
+          })
+        )
+      );
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    await adapter.postMessage("telegram:123", {
+      ast: adapter.formatConverter.toAst("**bold**"),
+    });
+
+    const sendMessageBody = JSON.parse(
+      String((mockFetch.mock.calls[1]?.[1] as RequestInit).body)
+    ) as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      parse_mode?: string;
+      text: string;
+    };
+
+    expect(sendMessageBody.text).toBe("bold");
+    expect(sendMessageBody.entities).toEqual([
+      { type: "bold", offset: 0, length: 4 },
+    ]);
+    expect(sendMessageBody.parse_mode).toBeUndefined();
+  });
+
+  it("clips entities when truncating long ast messages", async () => {
+    const longText = "a".repeat(5000);
+
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage()));
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    await adapter.postMessage("telegram:123", {
+      ast: adapter.formatConverter.toAst(`**${longText}**`),
+    });
+
+    const sendMessageBody = JSON.parse(
+      String((mockFetch.mock.calls[1]?.[1] as RequestInit).body)
+    ) as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      text: string;
+    };
+
+    expect(sendMessageBody.text).toHaveLength(4096);
+    expect(sendMessageBody.text.endsWith("...")).toBe(true);
+    expect(sendMessageBody.entities).toEqual([
+      { type: "bold", offset: 0, length: 4096 },
+    ]);
+  });
+
+  it("edits markdown messages using entities instead of parse_mode", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage()))
+      .mockResolvedValueOnce(
+        telegramOk(
+          sampleMessage({
+            text: "updated",
+            entities: [{ type: "bold", offset: 0, length: 7 }],
+            edit_date: 1735689700,
+          })
+        )
+      );
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    const posted = await adapter.postMessage("telegram:123", "hello");
+    await adapter.editMessage("telegram:123", posted.id, {
+      markdown: "**updated**",
+    });
+
+    const editMessageBody = JSON.parse(
+      String((mockFetch.mock.calls[2]?.[1] as RequestInit).body)
+    ) as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      parse_mode?: string;
+      text: string;
+    };
+
+    expect(editMessageBody.text).toBe("updated");
+    expect(editMessageBody.entities).toEqual([
+      { type: "bold", offset: 0, length: 7 },
+    ]);
+    expect(editMessageBody.parse_mode).toBeUndefined();
+  });
+
+  it("clips entities when truncating long markdown edits", async () => {
+    const longText = "b".repeat(5000);
+
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage()))
+      .mockResolvedValueOnce(telegramOk(sampleMessage()));
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    const posted = await adapter.postMessage("telegram:123", "hello");
+    await adapter.editMessage("telegram:123", posted.id, {
+      markdown: `**${longText}**`,
+    });
+
+    const editMessageBody = JSON.parse(
+      String((mockFetch.mock.calls[2]?.[1] as RequestInit).body)
+    ) as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      text: string;
+    };
+
+    expect(editMessageBody.text).toHaveLength(4096);
+    expect(editMessageBody.text.endsWith("...")).toBe(true);
+    expect(editMessageBody.entities).toEqual([
+      { type: "bold", offset: 0, length: 4096 },
+    ]);
+  });
+
+  it("keeps cached formatted content aligned with placeholder-expanded edit text when editMessageText returns true", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage()))
+      .mockResolvedValueOnce(telegramOk(true));
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    const posted = await adapter.postMessage("telegram:123", "hello");
+    await adapter.editMessage("telegram:123", posted.id, {
+      markdown: "**ok {{emoji:thumbs_up}}** done",
+    });
+
+    const cached = await adapter.fetchMessage("telegram:123", posted.id);
+    expect(cached?.text).toBe("ok 👍 done");
+    if (!cached?.formatted) {
+      throw new Error("Expected cached formatted content");
+    }
+    expect(adapter.renderFormatted(cached.formatted)).toBe("**ok 👍** done");
+  });
+
+  it("uses utf16 entity offsets for astral emoji in markdown edits", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(telegramOk(sampleMessage()))
+      .mockResolvedValueOnce(
+        telegramOk(
+          sampleMessage({
+            text: "😀bold",
+            entities: [{ type: "bold", offset: 2, length: 4 }],
+            edit_date: 1735689700,
+          })
+        )
+      );
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    const posted = await adapter.postMessage("telegram:123", "hello");
+    await adapter.editMessage("telegram:123", posted.id, {
+      markdown: "😀**bold**",
+    });
+
+    const editMessageBody = JSON.parse(
+      String((mockFetch.mock.calls[2]?.[1] as RequestInit).body)
+    ) as {
+      entities?: Array<{ type: string; offset: number; length: number }>;
+      text: string;
+    };
+
+    expect(editMessageBody.text).toBe("😀bold");
+    expect(editMessageBody.entities).toEqual([
+      { type: "bold", offset: 2, length: 4 },
+    ]);
+  });
+
+  it("uses caption_entities when uploading a document with markdown caption", async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(
+        telegramOk(
+          sampleMessage({
+            caption: "bold",
+            caption_entities: [{ type: "bold", offset: 0, length: 4 }],
+            document: {
+              file_id: "1",
+              file_unique_id: "u",
+              file_size: 1,
+              file_name: "demo.txt",
+              mime_type: "text/plain",
+            },
+            text: undefined,
+          })
+        )
+      );
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    await adapter.postMessage("telegram:123", {
+      markdown: "**bold**",
+      files: [
+        {
+          filename: "demo.txt",
+          data: Buffer.from("demo"),
+        },
+      ],
+    });
+
+    const formData = (mockFetch.mock.calls[1]?.[1] as RequestInit)
+      .body as FormData;
+
+    expect(formData.get("caption")).toBe("bold");
+    expect(JSON.parse(String(formData.get("caption_entities")))).toEqual([
+      { type: "bold", offset: 0, length: 4 },
+    ]);
+    expect(formData.get("parse_mode")).toBeNull();
+  });
+
+  it("clips caption_entities when truncating long markdown captions", async () => {
+    const longText = "c".repeat(2000);
+
+    mockFetch
+      .mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      )
+      .mockResolvedValueOnce(
+        telegramOk(
+          sampleMessage({
+            caption: `${longText.slice(0, 1021)}...`,
+            caption_entities: [{ type: "bold", offset: 0, length: 1021 }],
+            document: {
+              file_id: "1",
+              file_unique_id: "u",
+              file_size: 1,
+              file_name: "demo.txt",
+              mime_type: "text/plain",
+            },
+            text: undefined,
+          })
+        )
+      );
+
+    const adapter = createTelegramAdapter({
+      botToken: "token",
+      mode: "webhook",
+      logger: mockLogger,
+      userName: "mybot",
+    });
+
+    await adapter.initialize(createMockChat());
+
+    await adapter.postMessage("telegram:123", {
+      markdown: `**${longText}**`,
+      files: [
+        {
+          filename: "demo.txt",
+          data: Buffer.from("demo"),
+        },
+      ],
+    });
+
+    const formData = (mockFetch.mock.calls[1]?.[1] as RequestInit)
+      .body as FormData;
+    const caption = String(formData.get("caption"));
+
+    expect(caption).toHaveLength(1024);
+    expect(caption.endsWith("...")).toBe(true);
+    expect(JSON.parse(String(formData.get("caption_entities")))).toEqual([
+      { type: "bold", offset: 0, length: 1024 },
+    ]);
   });
 
   it("posts cards with inline keyboard buttons", async () => {
@@ -1641,6 +2121,124 @@ describe("TelegramAdapter", () => {
     expect(attachment?.type).toBe("file");
     expect(attachment?.name).toBe("report.pdf");
     expect(attachment?.mimeType).toBe("application/pdf");
+  });
+
+  it("reads local Bot API file paths directly when fetching attachment data", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "telegram-local-file-"));
+    try {
+      const localFile = join(tempRoot, "report.pdf");
+      await writeFile(localFile, Buffer.from("large pdf"));
+
+      mockFetch.mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      );
+      mockFetch.mockResolvedValueOnce(
+        telegramOk({
+          file_id: "doc1",
+          file_path: localFile,
+          file_unique_id: "u1",
+        })
+      );
+
+      const adapter = createTelegramAdapter({
+        apiBaseUrl: "http://127.0.0.1:8089",
+        botToken: "token",
+        mode: "webhook",
+        logger: mockLogger,
+        userName: "mybot",
+      });
+
+      await adapter.initialize(createMockChat());
+
+      const parsed = adapter.parseMessage(
+        sampleMessage({
+          document: {
+            file_id: "doc1",
+            file_unique_id: "u1",
+            file_name: "report.pdf",
+            mime_type: "application/pdf",
+          },
+        })
+      );
+      const data = await parsed.attachments[0]?.fetchData?.();
+
+      expect(data).toEqual(await readFile(localFile));
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      await rm(tempRoot, { force: true, recursive: true });
+    }
+  });
+
+  it("maps local Bot API container file paths to a configured host root", async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), "telegram-local-root-"));
+    const originalServerRoot = process.env.TELEGRAM_LOCAL_FILE_SERVER_ROOT;
+    const originalHostRoot = process.env.TELEGRAM_LOCAL_FILE_HOST_ROOT;
+    try {
+      const hostFile = join(tempRoot, "bot-token", "documents", "file_0.pdf");
+      await mkdir(join(tempRoot, "bot-token", "documents"), {
+        recursive: true,
+      });
+      await writeFile(hostFile, Buffer.from("large pdf"));
+      process.env.TELEGRAM_LOCAL_FILE_SERVER_ROOT = "/var/lib/telegram-bot-api";
+      process.env.TELEGRAM_LOCAL_FILE_HOST_ROOT = tempRoot;
+
+      mockFetch.mockResolvedValueOnce(
+        telegramOk({
+          id: 999,
+          is_bot: true,
+          first_name: "Bot",
+          username: "mybot",
+        })
+      );
+      mockFetch.mockResolvedValueOnce(
+        telegramOk({
+          file_id: "doc1",
+          file_path: "/var/lib/telegram-bot-api/bot-token/documents/file_0.pdf",
+          file_unique_id: "u1",
+        })
+      );
+
+      const adapter = createTelegramAdapter({
+        apiBaseUrl: "http://127.0.0.1:8090",
+        botToken: "token",
+        mode: "webhook",
+        logger: mockLogger,
+        userName: "mybot",
+      });
+
+      await adapter.initialize(createMockChat());
+
+      const parsed = adapter.parseMessage(
+        sampleMessage({
+          document: {
+            file_id: "doc1",
+            file_unique_id: "u1",
+            file_name: "report.pdf",
+            mime_type: "application/pdf",
+          },
+        })
+      );
+      const data = await parsed.attachments[0]?.fetchData?.();
+
+      expect(data).toEqual(await readFile(hostFile));
+    } finally {
+      if (typeof originalServerRoot === "string") {
+        process.env.TELEGRAM_LOCAL_FILE_SERVER_ROOT = originalServerRoot;
+      } else {
+        Reflect.deleteProperty(process.env, "TELEGRAM_LOCAL_FILE_SERVER_ROOT");
+      }
+      if (typeof originalHostRoot === "string") {
+        process.env.TELEGRAM_LOCAL_FILE_HOST_ROOT = originalHostRoot;
+      } else {
+        Reflect.deleteProperty(process.env, "TELEGRAM_LOCAL_FILE_HOST_ROOT");
+      }
+      await rm(tempRoot, { force: true, recursive: true });
+    }
   });
 
   it("extracts audio attachments from audio messages", async () => {

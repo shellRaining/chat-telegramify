@@ -20,7 +20,7 @@
     "@chat-adapter/slack": "workspace:*",
     "@chat-adapter/state-memory": "workspace:*",
     "@chat-adapter/teams": "workspace:*",
-    "@chat-adapter/telegram": "workspace:*",
+    "@chat-adapter/telegram": "workspace:@shellraining/chat-adapter-telegram@*",
     "@chat-adapter/whatsapp": "workspace:*",
     "chat": "workspace:*",
     "discord-api-types": "^0.37.119"
