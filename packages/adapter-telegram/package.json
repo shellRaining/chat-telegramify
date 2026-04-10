@@ -25,7 +25,8 @@
   },
   "dependencies": {
     "@chat-adapter/shared": "workspace:*",
-    "chat": "workspace:*"
+    "chat": "workspace:*",
+    "telegramify": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.3.2",

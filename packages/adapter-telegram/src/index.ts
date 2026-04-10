@@ -39,6 +39,10 @@ import {
   emptyTelegramInlineKeyboard,
 } from "./cards";
 import { TelegramFormatConverter } from "./markdown";
+import {
+  renderTelegramRichText,
+  type TelegramRichEntity,
+} from "telegramify";
 import type {
   TelegramAdapterConfig,
   TelegramAdapterMode,
@@ -99,6 +103,86 @@ interface ResolvedTelegramLongPollingConfig {
   retryDelayMs: number;
   timeout: number;
 }
+
+interface TelegramOutgoingMessage {
+  entities?: TelegramRichEntity[];
+  formatted?: FormattedContent;
+  parseMode?: string;
+  text: string;
+}
+
+const clipTelegramEntities = (
+  entities: TelegramRichEntity[] | undefined,
+  maxLength: number
+): TelegramRichEntity[] | undefined => {
+  if (!entities) {
+    return undefined;
+  }
+
+  return entities.flatMap((entity) => {
+    if (entity.offset >= maxLength) {
+      return [];
+    }
+
+    const length = Math.min(entity.length, maxLength - entity.offset);
+    if (length <= 0) {
+      return [];
+    }
+
+    return [{ ...entity, length }];
+  });
+};
+
+const TELEGRAM_EMOJI_PLACEHOLDER_REGEX = /\{\{emoji:([a-z0-9_]+)\}\}/gi;
+
+const adjustEntitiesForEmojiPlaceholders = (
+  text: string,
+  entities: TelegramRichEntity[]
+): { entities: TelegramRichEntity[]; text: string } => {
+  const adjustedEntities = entities.map((entity) => ({ ...entity }));
+  let nextText = text;
+  let delta = 0;
+
+  for (const match of text.matchAll(TELEGRAM_EMOJI_PLACEHOLDER_REGEX)) {
+    const placeholder = match[0];
+    const emojiName = match[1];
+    const originalIndex = match.index;
+    if (originalIndex === undefined || !placeholder || !emojiName) {
+      continue;
+    }
+
+    const replacement = defaultEmojiResolver.toGChat(emojiName);
+    const replacedIndex = originalIndex + delta;
+    nextText =
+      nextText.slice(0, replacedIndex) +
+      replacement +
+      nextText.slice(replacedIndex + placeholder.length);
+
+    const diff = replacement.length - placeholder.length;
+    const placeholderEnd = originalIndex + placeholder.length;
+
+    for (const entity of adjustedEntities) {
+      const entityEnd = entity.offset + entity.length;
+      if (entityEnd <= originalIndex) {
+        continue;
+      }
+
+      if (entity.offset >= placeholderEnd) {
+        entity.offset += diff;
+        continue;
+      }
+
+      entity.length += diff;
+    }
+
+    delta += diff;
+  }
+
+  return {
+    text: nextText,
+    entities: adjustedEntities,
+  };
+};
 
 type TelegramRuntimeMode = "webhook" | "polling";
 
@@ -659,15 +743,7 @@ export class TelegramAdapter
 
     const card = extractCard(message);
     const replyMarkup = card ? cardToTelegramInlineKeyboard(card) : undefined;
-    const parseMode = this.resolveParseMode(message, card);
-    const text = this.truncateMessage(
-      convertEmojiPlaceholders(
-        card
-          ? cardToFallbackText(card)
-          : this.formatConverter.renderPostable(message),
-        "gchat"
-      )
-    );
+    const outgoing = this.buildOutgoingMessage(message, card);
 
     const files = extractFiles(message);
     if (files.length > 1) {
@@ -687,21 +763,21 @@ export class TelegramAdapter
       rawMessage = await this.sendDocument(
         parsedThread,
         file,
-        text,
+        outgoing,
         replyMarkup,
-        parseMode
       );
     } else {
-      if (!text.trim()) {
+      if (!outgoing.text.trim()) {
         throw new ValidationError("telegram", "Message text cannot be empty");
       }
 
       rawMessage = await this.telegramFetch<TelegramMessage>("sendMessage", {
         chat_id: parsedThread.chatId,
         message_thread_id: parsedThread.messageThreadId,
-        text,
+        text: outgoing.text,
+        entities: outgoing.entities,
         reply_markup: replyMarkup,
-        parse_mode: parseMode,
+        parse_mode: outgoing.parseMode,
       });
     }
 
@@ -745,17 +821,9 @@ export class TelegramAdapter
 
     const card = extractCard(message);
     const replyMarkup = card ? cardToTelegramInlineKeyboard(card) : undefined;
-    const parseMode = this.resolveParseMode(message, card);
-    const text = this.truncateMessage(
-      convertEmojiPlaceholders(
-        card
-          ? cardToFallbackText(card)
-          : this.formatConverter.renderPostable(message),
-        "gchat"
-      )
-    );
+    const outgoing = this.buildOutgoingMessage(message, card);
 
-    if (!text.trim()) {
+    if (!outgoing.text.trim()) {
       throw new ValidationError("telegram", "Message text cannot be empty");
     }
 
@@ -764,9 +832,10 @@ export class TelegramAdapter
       {
         chat_id: chatId,
         message_id: telegramMessageId,
-        text,
+        text: outgoing.text,
+        entities: outgoing.entities,
         reply_markup: replyMarkup ?? emptyTelegramInlineKeyboard(),
-        parse_mode: parseMode,
+        parse_mode: outgoing.parseMode,
       }
     );
 
@@ -781,8 +850,8 @@ export class TelegramAdapter
 
       const updated = new Message<TelegramRawMessage>({
         ...existing,
-        text,
-        formatted: this.formatConverter.toAst(text),
+        text: outgoing.text,
+        formatted: this.buildCachedFormattedContent(outgoing),
         metadata: {
           ...existing.metadata,
           edited: true,
@@ -1201,9 +1270,8 @@ export class TelegramAdapter
       data: Buffer | Blob | ArrayBuffer;
       mimeType?: string;
     },
-    text: string,
+    outgoing: TelegramOutgoingMessage,
     replyMarkup?: TelegramInlineKeyboardMarkup,
-    parseMode?: string
   ): Promise<TelegramMessage> {
     const buffer = await this.toTelegramBuffer(file.data);
 
@@ -1213,10 +1281,21 @@ export class TelegramAdapter
       formData.append("message_thread_id", String(thread.messageThreadId));
     }
 
-    if (text.trim()) {
-      formData.append("caption", this.truncateCaption(text));
-      if (parseMode) {
-        formData.append("parse_mode", parseMode);
+    if (outgoing.text.trim()) {
+      const caption = this.truncateCaption(outgoing.text);
+      formData.append("caption", caption);
+      const captionEntities = clipTelegramEntities(
+        outgoing.entities,
+        caption.length
+      );
+      if (captionEntities) {
+        formData.append(
+          "caption_entities",
+          JSON.stringify(captionEntities)
+        );
+      }
+      if (outgoing.parseMode) {
+        formData.append("parse_mode", outgoing.parseMode);
       }
     }
 
@@ -1504,6 +1583,77 @@ export class TelegramAdapter
     const hasMarkdown =
       typeof message === "object" && message !== null && "markdown" in message;
     return card || hasMarkdown ? TELEGRAM_MARKDOWN_PARSE_MODE : undefined;
+  }
+
+  private buildOutgoingMessage(
+    message: AdapterPostableMessage,
+    card: ReturnType<typeof extractCard>
+  ): TelegramOutgoingMessage {
+    if (card) {
+      return {
+        text: this.truncateMessage(
+          convertEmojiPlaceholders(cardToFallbackText(card), "gchat")
+        ),
+        parseMode: this.resolveParseMode(message, card),
+      };
+    }
+
+    if (typeof message === "object" && message !== null) {
+      if ("markdown" in message) {
+        return this.buildRichTextMessage(this.formatConverter.toAst(message.markdown));
+      }
+
+      if ("ast" in message) {
+        return this.buildRichTextMessage(message.ast);
+      }
+
+      if ("raw" in message) {
+        return {
+          text: this.truncateMessage(
+            convertEmojiPlaceholders(message.raw, "gchat")
+          ),
+        };
+      }
+    }
+
+    if (typeof message === "string") {
+      return {
+        text: this.truncateMessage(convertEmojiPlaceholders(message, "gchat")),
+      };
+    }
+
+    return {
+      text: this.truncateMessage(
+        convertEmojiPlaceholders(this.formatConverter.renderPostable(message), "gchat")
+      ),
+      parseMode: this.resolveParseMode(message, card),
+    };
+  }
+
+  private buildRichTextMessage(content: FormattedContent): TelegramOutgoingMessage {
+    const rendered = renderTelegramRichText(content);
+    const adjusted = adjustEntitiesForEmojiPlaceholders(
+      rendered.text,
+      rendered.entities
+    );
+    const text = this.truncateMessage(adjusted.text);
+    return {
+      text,
+      entities: clipTelegramEntities(adjusted.entities, text.length),
+      formatted: content,
+    };
+  }
+
+  private buildCachedFormattedContent(
+    outgoing: TelegramOutgoingMessage
+  ): FormattedContent {
+    if (outgoing.entities && outgoing.entities.length > 0) {
+      return this.formatConverter.toAst(
+        applyTelegramEntities(outgoing.text, outgoing.entities)
+      );
+    }
+
+    return outgoing.formatted ?? this.formatConverter.toAst(outgoing.text);
   }
 
   private truncateMessage(text: string): string {
