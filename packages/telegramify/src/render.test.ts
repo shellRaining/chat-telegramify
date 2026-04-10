@@ -41,6 +41,24 @@ describe("renderTelegramRichText", () => {
     expect(result.text).toBe("1. first\n2. second");
   });
 
+  it("renders markdown tables as ascii preformatted blocks", () => {
+    const ast = parseMarkdown("| # | Title |\n|---|---|\n| 1 | alpha |\n| 2 | beta |\n");
+    const result = renderTelegramRichText(ast);
+
+    expect(result.text).toContain("#");
+    expect(result.text).toContain("Title");
+    expect(result.text).toContain("alpha");
+    expect(result.text).toContain("beta");
+    expect(result.entities).toEqual([
+      {
+        type: "pre",
+        offset: 0,
+        length: result.text.length,
+        language: undefined,
+      },
+    ]);
+  });
+
   it("keeps entity offsets aligned with text when block content already contains extra newlines", () => {
     const ast: Root = {
       type: "root",

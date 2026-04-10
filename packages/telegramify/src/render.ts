@@ -1,4 +1,5 @@
 import type { Content, Root } from "chat";
+import { isTableNode, tableToAscii } from "chat";
 import { telegramUtf16Length } from "./entities";
 import type { TelegramRichEntity } from "./types";
 
@@ -246,6 +247,30 @@ const renderNode = (state: RenderState, node: Content): void => {
     }
 
     default: {
+      if (isTableNode(node)) {
+        ensureBlankLine(state);
+
+        const start = telegramUtf16Length(state.text);
+        const asciiTable = tableToAscii(node);
+        appendText(state, asciiTable, {
+          kind: "code_block",
+          rawCode: asciiTable,
+        });
+
+        const length = telegramUtf16Length(state.text) - start;
+        if (length > 0) {
+          state.entities.push({
+            type: "pre",
+            offset: start,
+            length,
+            language: undefined,
+          });
+        }
+
+        ensureBlankLine(state);
+        return;
+      }
+
       if (hasChildren(node)) {
         renderChildren(state, node);
       }
