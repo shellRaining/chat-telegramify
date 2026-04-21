@@ -1,6 +1,6 @@
 {
   "name": "@shellraining/chat-adapter-telegram",
-  "version": "4.24.1",
+  "version": "4.24.2",
   "description": "Telegram adapter for chat",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,8 +24,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@chat-adapter/shared": "workspace:*",
-    "chat": "workspace:*",
+    "@chat-adapter/shared": "^4.26.0",
+    "chat": "^4.26.0",
     "telegramify": "^0.1.1"
   },
   "devDependencies": {
